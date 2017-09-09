@@ -132,8 +132,8 @@ def _variable_on_cpu(name, shape, initializer, dtype=tf.float32):
     return var
 
 
-def tower_loss(inputs, labels):
-    """计算每个 gpu 内的 loss，附带计算 normalized_embeddings 和 similarity"""
+def tower_loss(scope, inputs, labels):
+    """计算每个 gpu 内的 loss"""
 
     # 定义网络从输入层到隐藏层的参数（embedding 矩阵）
     embeddings = _variable_on_cpu('embeddings', [vocabulary_size, embedding_size],
@@ -157,8 +157,13 @@ def tower_loss(inputs, labels):
                     inputs=embed,
                     num_sampled=num_sampled,  # 负例采样的个数
                     num_classes=vocabulary_size))
-
-    return loss, embeddings
+    tf.add_to_collection('losses', loss)
+    losses = tf.get_collection('losses', scope)
+    total_loss = tf.add_n(losses, name='total_loss')
+    print('loss', loss)
+    print('losses', losses)
+    print('total_loss', total_loss)
+    return total_loss, embeddings
 
 
 def average_gradients(tower_grads):
@@ -169,6 +174,8 @@ def average_gradients(tower_grads):
     for grad_and_vars in zip(*tower_grads):
         print('grad_and_vars', grad_and_vars)
         grads = []
+
+        # 对该 variable 的每个 gpu 上的梯度求平均
         for g, _ in grad_and_vars:
             expanded_g = tf.expand_dims(g, 0)
             grads.append(expanded_g)
@@ -217,21 +224,22 @@ if __name__ == '__main__':
         with tf.variable_scope(tf.get_variable_scope()):
             for i in xrange(num_gpus):
                 with tf.device('/gpu:%d' % i):
+                    with tf.name_scope('%s_%d' % ('tower', i)) as scope:
 
-                    # 向当前 GPU 分配数据
-                    train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu], [batch_size_gpu])
-                    train_labels_gpu = tf.slice(train_labels, [i * batch_size_gpu, 0], [batch_size_gpu, 1])
-                    print('train_inputs_gpu', train_inputs_gpu)
-                    print('train_labels_gpu', train_labels_gpu)
+                        # 向当前 GPU 分配数据
+                        train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu], [batch_size_gpu])
+                        train_labels_gpu = tf.slice(train_labels, [i * batch_size_gpu, 0], [batch_size_gpu, 1])
+                        print('train_inputs_gpu', train_inputs_gpu)
+                        print('train_labels_gpu', train_labels_gpu)
 
-                    # 计算损失
-                    loss, embeddings = tower_loss(train_inputs_gpu, train_labels_gpu)
-                    tf.get_variable_scope().reuse_variables()
+                        # 计算损失
+                        loss, embeddings = tower_loss(scope, train_inputs_gpu, train_labels_gpu)
+                        tf.get_variable_scope().reuse_variables()
 
-                    # 计算梯度
-                    opt = tf.train.GradientDescentOptimizer(1.0)
-                    grads = opt.compute_gradients(loss)
-                    tower_grads.append(grads)
+                        # 计算梯度
+                        opt = tf.train.GradientDescentOptimizer(1.0)
+                        grads = opt.compute_gradients(loss)
+                        tower_grads.append(grads)
 
         # 综合不同 GPU 计算出的梯度方向，并更新模型参数
         grads = average_gradients(tower_grads)
