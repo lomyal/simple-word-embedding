@@ -162,14 +162,14 @@ if __name__ == '__main__':
 
     # === Step 1 === 读取原始训练数据（一行空格分割的单词长文，无标点）
     vocabulary = read_data(filename)
-    print('训练数据大小：', len(vocabulary))
+    print('Raw training data size: ', len(vocabulary))
 
     # === Step 2 === 构建词典
     data, count, dictionary, reverse_dictionary = build_dataset(vocabulary,
                                                             vocabulary_size)
     del vocabulary
-    print('最高频的词示例 (+UNK)', count[:5])
-    print('样本数据示例', data[:10], [reverse_dictionary[i] for i in data[:10]])
+    print('Most common words (+UNK)', count[:5])
+    print('Data sample', data[:10], [reverse_dictionary[i] for i in data[:10]])
 
     # === Step 3 === 为 skip-gram model 生产 mini-batch 数据（输出几个测试样例）
     # batch, labels = generate_batch(batch_size=8, num_skips=2, skip_window=1)
@@ -229,7 +229,7 @@ if __name__ == '__main__':
     with tf.Session(graph=graph, config=config) as session:
         # 初始化参数
         init.run()
-        print('初始化完成')
+        print('Init finished')
 
         average_loss = 0
         for step in xrange(num_steps):
@@ -245,7 +245,7 @@ if __name__ == '__main__':
                 if step > 0:
                     average_loss /= 2000
                 # 平均损失计算的是过去 2000 步的平均损失
-                print('在第 ', step, ' 步，过去 2000 步的平均损失: ', average_loss)
+                print('Step ', step, ', average loss of last 2000 steps: ', average_loss)
                 average_loss = 0
 
             # 训练过程中每隔一定步数做一次当前 embedding 效果的验证
@@ -255,7 +255,7 @@ if __name__ == '__main__':
                     valid_word = reverse_dictionary[valid_examples[i]]
                     top_k = 8  # 考虑离验证词最近的几个词
                     nearest = (-sim[i, :]).argsort()[1:top_k + 1]
-                    log_str = 'Embedding 向量空间中最靠近 %s 的词是:' % valid_word
+                    log_str = 'The nearest words to %s in the embedding vector space: ' % valid_word
                     for k in xrange(top_k):
                         close_word = reverse_dictionary[nearest[k]]
                         log_str = '%s %s,' % (log_str, close_word)
@@ -275,4 +275,4 @@ if __name__ == '__main__':
         plot_with_labels(low_dim_embs, labels)
 
     except ImportError:
-        print('需要安装依赖： sklearn, matplotlib, scipy')
+        print('Need to install： sklearn, matplotlib, scipy')
