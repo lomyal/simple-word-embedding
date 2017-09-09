@@ -21,6 +21,7 @@ from __future__ import print_function
 import collections
 import math
 import random
+import datetime as dt
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
@@ -124,21 +125,28 @@ def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
     plt.savefig(filename)
 
 
+def _variable_on_cpu(name, shape, initializer, dtype=tf.float32):
+    """Helper to create a Variable stored on CPU memory"""
+    with tf.device('/cpu:0'):
+        var = tf.get_variable(name, shape, initializer=initializer, dtype=dtype)
+    return var
+
+
 def tower_loss(inputs, labels):
     """计算每个 gpu 内的 loss，附带计算 normalized_embeddings 和 similarity"""
 
     # 定义网络从输入层到隐藏层的参数（embedding 矩阵）
-    embeddings = tf.Variable(
-            tf.random_uniform([vocabulary_size, embedding_size], -1.0, 1.0))
+    embeddings = _variable_on_cpu('embeddings', [vocabulary_size, embedding_size],
+            tf.random_uniform_initializer(-1.0, 1.0))
 
     # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
     embed = tf.nn.embedding_lookup(embeddings, train_inputs)
 
     # 定义网络从隐藏层到输出层的参数
-    nce_weights = tf.Variable(
-            tf.truncated_normal([vocabulary_size, embedding_size],
-                                stddev=1.0 / math.sqrt(embedding_size)))
-    nce_biases = tf.Variable(tf.zeros([vocabulary_size]))
+    nce_weights = _variable_on_cpu('nce_weights', [vocabulary_size, embedding_size],
+            tf.truncated_normal_initializer(stddev=1.0 / math.sqrt(embedding_size)))
+    nce_biases = _variable_on_cpu('nce_biases', [vocabulary_size],
+            tf.zeros_initializer())
 
     # 计算当前 mini-batch 的 NCE loss
     # tf.nce_loss 负责选出在每个 mini-batch 中每个正样本对应的负样本
@@ -155,7 +163,24 @@ def tower_loss(inputs, labels):
 
 def average_gradients(tower_grads):
     """对多卡计算出的梯度求平均"""
-    return tower_grads[0]  # todo 真正计算综合梯度
+    average_grads = []
+
+    # 分别对网络中每个 variable 的梯度求平均
+    for grad_and_vars in zip(*tower_grads):
+        print('grad_and_vars', grad_and_vars)
+        grads = []
+        for g, _ in grad_and_vars:
+            expanded_g = tf.expand_dims(g, 0)
+            grads.append(expanded_g)
+
+        grad = tf.concat(axis=0, values=grads)
+        grad = tf.reduce_mean(grad, 0)
+
+        v = grad_and_vars[0][1]
+        grad_and_var = (grad, v)
+        average_grads.append(grad_and_var)
+    print('average_grads', average_grads)
+    return average_grads
 
 
 if __name__ == '__main__':
@@ -196,6 +221,8 @@ if __name__ == '__main__':
                     # 向当前 GPU 分配数据
                     train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu], [batch_size_gpu])
                     train_labels_gpu = tf.slice(train_labels, [i * batch_size_gpu, 0], [batch_size_gpu, 1])
+                    print('train_inputs_gpu', train_inputs_gpu)
+                    print('train_labels_gpu', train_labels_gpu)
 
                     # 计算损失
                     loss, embeddings = tower_loss(train_inputs_gpu, train_labels_gpu)
@@ -245,7 +272,8 @@ if __name__ == '__main__':
                 if step > 0:
                     average_loss /= 2000
                 # 平均损失计算的是过去 2000 步的平均损失
-                print('Step ', step, ', average loss of last 2000 steps: ', average_loss)
+                print('[', dt.datetime.now(), '] == Step ', step,
+                        ', average loss of last 2000 steps: ', average_loss)
                 average_loss = 0
 
             # 训练过程中每隔一定步数做一次当前 embedding 效果的验证
