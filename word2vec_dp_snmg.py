@@ -174,8 +174,10 @@ if __name__ == '__main__':
                         num_sampled=num_sampled,  # 负例采样的个数
                         num_classes=vocabulary_size))
 
-        # 学习率为 1 的 SGD optimizer，暗含了“计算梯度”和“更新模型参数”两个操作
-        optimizer = tf.train.GradientDescentOptimizer(1.0).minimize(loss)
+        # 分“计算梯度”和“更新模型参数”两个阶段执行优化操作
+        opt = tf.train.GradientDescentOptimizer(1.0)
+        grads = opt.compute_gradients(loss)
+        apply_gradient_op = opt.apply_gradients(grads)
 
         # 在执行 similarity.eval() 时，计算当前 embedding 下词的相似度，用于在训练过程中验证效果
         norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
@@ -205,7 +207,7 @@ if __name__ == '__main__':
             feed_dict = {train_inputs: batch_inputs, train_labels: batch_labels}
 
             # 进行一次训练
-            _, loss_val = session.run([optimizer, loss], feed_dict=feed_dict)
+            _, loss_val = session.run([apply_gradient_op, loss], feed_dict=feed_dict)
             average_loss += loss_val
 
             if step % 2000 == 0:
