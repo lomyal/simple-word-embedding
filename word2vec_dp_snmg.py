@@ -32,6 +32,7 @@ filename = 'data/training.txt'
 vocabulary_size = 50000
 
 # 训练超参数定义
+num_gpus = 1
 batch_size = 128
 embedding_size = 128  # embedding 向量的维度
 skip_window = 1       # 考虑中位词左右几个词可用于生成正例
@@ -123,6 +124,40 @@ def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
     plt.savefig(filename)
 
 
+def tower_loss(inputs, labels):
+    """计算每个 gpu 内的 loss，附带计算 normalized_embeddings 和 similarity"""
+
+    # 定义网络从输入层到隐藏层的参数（embedding 矩阵）
+    embeddings = tf.Variable(
+            tf.random_uniform([vocabulary_size, embedding_size], -1.0, 1.0))
+
+    # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
+    embed = tf.nn.embedding_lookup(embeddings, train_inputs)
+
+    # 定义网络从隐藏层到输出层的参数
+    nce_weights = tf.Variable(
+            tf.truncated_normal([vocabulary_size, embedding_size],
+                                stddev=1.0 / math.sqrt(embedding_size)))
+    nce_biases = tf.Variable(tf.zeros([vocabulary_size]))
+
+    # 计算当前 mini-batch 的 NCE loss
+    # tf.nce_loss 负责选出在每个 mini-batch 中每个正样本对应的负样本
+    loss = tf.reduce_mean(
+            tf.nn.nce_loss(weights=nce_weights,
+                    biases=nce_biases,
+                    labels=train_labels,
+                    inputs=embed,
+                    num_sampled=num_sampled,  # 负例采样的个数
+                    num_classes=vocabulary_size))
+
+    return loss, embeddings
+
+
+def average_gradients(tower_grads):
+    """对多卡计算出的梯度求平均"""
+    return tower_grads[0]  # todo 真正计算综合梯度
+
+
 if __name__ == '__main__':
 
     # === Step 1 === 读取原始训练数据（一行空格分割的单词长文，无标点）
@@ -137,46 +172,42 @@ if __name__ == '__main__':
     print('样本数据示例', data[:10], [reverse_dictionary[i] for i in data[:10]])
 
     # === Step 3 === 为 skip-gram model 生产 mini-batch 数据（输出几个测试样例）
-    batch, labels = generate_batch(batch_size=8, num_skips=2, skip_window=1)
-    for i in range(8):
-        print(batch[i], reverse_dictionary[batch[i]],
-                '->', labels[i, 0], reverse_dictionary[labels[i, 0]])
+    # batch, labels = generate_batch(batch_size=8, num_skips=2, skip_window=1)
+    # for i in range(8):
+    #     print(batch[i], reverse_dictionary[batch[i]],
+    #             '->', labels[i, 0], reverse_dictionary[labels[i, 0]])
 
     # === Step 4 === 构造 skip-gram model 网络结构，定义训练操作
     graph = tf.Graph()
-    with graph.as_default():
+    with graph.as_default(), tf.device('/cpu:0'):
+
         # 网络的输入
         train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
         valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
 
-        with tf.device('/gpu:0'):
-            # 定义 embedding 矩阵
-            embeddings = tf.Variable(
-                    tf.random_uniform([vocabulary_size, embedding_size], -1.0, 1.0))
+        # GPU 数据并行
+        tower_grads = []
+        batch_size_gpu = batch_size // num_gpus
+        with tf.variable_scope(tf.get_variable_scope()):
+            for i in xrange(num_gpus):
+                with tf.device('/gpu:%d' % i):
 
-            # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
-            embed = tf.nn.embedding_lookup(embeddings, train_inputs)
+                    # 向当前 GPU 分配数据
+                    train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu], [batch_size_gpu])
+                    train_labels_gpu = tf.slice(train_labels, [i * batch_size_gpu, 0], [batch_size_gpu, 1])
 
-            # 定义 NCE loss 的 LR 参数
-            nce_weights = tf.Variable(
-                    tf.truncated_normal([vocabulary_size, embedding_size],
-                                        stddev=1.0 / math.sqrt(embedding_size)))
-            nce_biases = tf.Variable(tf.zeros([vocabulary_size]))
+                    # 计算损失
+                    loss, embeddings = tower_loss(train_inputs_gpu, train_labels_gpu)
+                    tf.get_variable_scope().reuse_variables()
 
-        # 计算当前 mini-batch 的 NCE loss
-        # tf.nce_loss 负责在每个 mini-batch 中生成新的负例
-        loss = tf.reduce_mean(
-                tf.nn.nce_loss(weights=nce_weights,
-                        biases=nce_biases,
-                        labels=train_labels,
-                        inputs=embed,
-                        num_sampled=num_sampled,  # 负例采样的个数
-                        num_classes=vocabulary_size))
+                    # 计算梯度
+                    opt = tf.train.GradientDescentOptimizer(1.0)
+                    grads = opt.compute_gradients(loss)
+                    tower_grads.append(grads)
 
-        # 分“计算梯度”和“更新模型参数”两个阶段执行优化操作
-        opt = tf.train.GradientDescentOptimizer(1.0)
-        grads = opt.compute_gradients(loss)
+        # 综合不同 GPU 计算出的梯度方向，并更新模型参数
+        grads = average_gradients(tower_grads)
         apply_gradient_op = opt.apply_gradients(grads)
 
         # 在执行 similarity.eval() 时，计算当前 embedding 下词的相似度，用于在训练过程中验证效果
@@ -218,7 +249,7 @@ if __name__ == '__main__':
                 average_loss = 0
 
             # 训练过程中每隔一定步数做一次当前 embedding 效果的验证
-            if step % 100000 == 0:
+            if step % 10000 == 0:
                 sim = similarity.eval()
                 for i in xrange(valid_size):
                     valid_word = reverse_dictionary[valid_examples[i]]
