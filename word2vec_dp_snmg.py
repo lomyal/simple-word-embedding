@@ -18,15 +18,31 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numbers
 import collections
 import math
-import os
 import random
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
+
+
+# 数据超参数定义
+filename = 'data/training.txt'
+vocabulary_size = 50000
+
+# 训练超参数定义
+batch_size = 128
+embedding_size = 128  # embedding 向量的维度
+skip_window = 1       # 考虑中位词左右几个词可用于生成正例
+num_skips = 2         # 一个中位词产生几个正例
+num_sampled = 64      # 一个正例配几个负例
+num_steps = 100001    # 训练步数
+
+# 验证集超参数定义
+valid_size = 16       # 验证词的个数
+valid_window = 100    # 将前多少个词定义为高频词
+valid_examples = np.random.choice(valid_window, valid_size, replace=False)
 
 
 def read_data(filename):
@@ -107,16 +123,13 @@ def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
     plt.savefig(filename)
 
 
-
 if __name__ == '__main__':
 
     # === Step 1 === 读取原始训练数据（一行空格分割的单词长文，无标点）
-    filename = 'data/training.txt'
     vocabulary = read_data(filename)
     print('训练数据大小：', len(vocabulary))
 
     # === Step 2 === 构建词典
-    vocabulary_size = 50000
     data, count, dictionary, reverse_dictionary = build_dataset(vocabulary,
                                                             vocabulary_size)
     del vocabulary
@@ -130,17 +143,6 @@ if __name__ == '__main__':
                 '->', labels[i, 0], reverse_dictionary[labels[i, 0]])
 
     # === Step 4 === 构造 skip-gram model 网络结构，定义训练操作
-    batch_size = 128
-    embedding_size = 128  # embedding 向量的维度
-    skip_window = 1       # 考虑中位词左右几个词可用于生成正例
-    num_skips = 2         # 一个中位词产生几个正例
-    num_sampled = 64      # 一个正例配几个负例
-
-    # 从高频词中挑几个出来作为训练过程中的验证集
-    valid_size = 16       # 验证词的个数
-    valid_window = 100    # 将前多少个词定义为高频词
-    valid_examples = np.random.choice(valid_window, valid_size, replace=False)
-
     graph = tf.Graph()
     with graph.as_default():
         # 网络的输入
@@ -187,8 +189,11 @@ if __name__ == '__main__':
         init = tf.global_variables_initializer()
 
     # === Step 5 === 开始训练
-    num_steps = 100001
-    with tf.Session(graph=graph) as session:
+    config = tf.ConfigProto(
+            allow_soft_placement=True,
+            gpu_options=tf.GPUOptions(allow_growth=True))  # 显存使用控制
+
+    with tf.Session(graph=graph, config=config) as session:
         # 初始化参数
         init.run()
         print('初始化完成')
