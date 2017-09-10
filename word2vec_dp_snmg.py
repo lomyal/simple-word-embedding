@@ -271,6 +271,7 @@ if __name__ == '__main__':
         print('Init finished')
 
         average_loss = 0
+        final_loss = 0
         for step in xrange(num_steps):
             batch_inputs, batch_labels = generate_batch(
                     batch_size, num_skips, skip_window)
@@ -279,6 +280,7 @@ if __name__ == '__main__':
             # 进行一次训练
             _, loss_val = session.run([apply_gradient_op, loss], feed_dict=feed_dict)
             average_loss += loss_val
+            final_loss = loss_val
 
             if step % 2000 == 0:
                 if step > 0:
@@ -305,7 +307,8 @@ if __name__ == '__main__':
         print('--------------------------------')
         print('Single Node Multiple GPU')
         print('--------------------------------')
-        print('TOTAL TIME: ', time_elapsed_str)
+        print('TOTAL_TIME: ', time_elapsed_str)
+        print('final_loss: ', final_loss)
         print('num_steps: ', num_steps)
         print('num_gpus: ', num_gpus)
         print('batch_size: ', batch_size)
@@ -313,17 +316,17 @@ if __name__ == '__main__':
         print('data_size:', data_size)
         print('--------------------------------')
 
-    # === Step 6 === embedding 可视化
-    try:
-        # pylint: disable=g-import-not-at-top
-        from sklearn.manifold import TSNE
-        import matplotlib.pyplot as plt
+    # # === Step 6 === embedding 可视化
+    # try:
+    #     # pylint: disable=g-import-not-at-top
+    #     from sklearn.manifold import TSNE
+    #     import matplotlib.pyplot as plt
 
-        tsne = TSNE(perplexity=30, n_components=2, init='pca', n_iter=5000, method='exact')
-        plot_only = 500
-        low_dim_embs = tsne.fit_transform(final_embeddings[:plot_only, :])
-        labels = [reverse_dictionary[i] for i in xrange(plot_only)]
-        plot_with_labels(low_dim_embs, labels)
+    #     tsne = TSNE(perplexity=30, n_components=2, init='pca', n_iter=5000, method='exact')
+    #     plot_only = 500
+    #     low_dim_embs = tsne.fit_transform(final_embeddings[:plot_only, :])
+    #     labels = [reverse_dictionary[i] for i in xrange(plot_only)]
+    #     plot_with_labels(low_dim_embs, labels)
 
-    except ImportError:
-        print('Need to install： sklearn, matplotlib, scipy')
+    # except ImportError:
+    #     print('Need to install: sklearn, matplotlib, scipy')
