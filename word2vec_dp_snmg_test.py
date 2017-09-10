@@ -7,10 +7,18 @@
 #
 ################################################################################
 """
-数据并行：单机多卡训练 word2vec
+数据并行：单机多卡训练 word2vec 测试
+
+尝试改进 average_gradient() 的计算效率：对 IndexedSlices 类型的梯度求均值时，不将其
+扩展为 Dense Tensor，而是直接计算 IndexedSlices.values 的均值，最后仍返回
+IndexedSlices 类型的梯度。
+
+存在问题：自己构造 IndexedSlices 类型的梯度，在 optimizer 执行 apply_gradient() 操
+作时，对变量的更新操作不正确。已阅读 IndexedSlices、 GradientDescentOptimizer 的源
+码，基本了解梯度更新执行细节，但目前尚未解决此问题。
 
 Authors: Wang Shijun
-Date:  2017/09/09 16:16:00
+Date:  2017/09/10 12:03:00
 """
 
 
@@ -26,20 +34,20 @@ import datetime as dt
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
-
+from tensorflow.python.framework import ops
 
 # 数据超参数定义
 filename = 'data/training.txt'
 vocabulary_size = 50000
 
 # 训练超参数定义
-num_gpus = 1
+num_gpus = 2
 batch_size = 128
 embedding_size = 128  # embedding 向量的维度
 skip_window = 1       # 考虑中位词左右几个词可用于生成正例
 num_skips = 2         # 一个中位词产生几个正例
 num_sampled = 64      # 一个正例配几个负例
-num_steps = 10001    # 训练步数
+num_steps = 2000    # 训练步数
 
 # 验证集超参数定义
 valid_size = 16       # 验证词的个数
@@ -168,6 +176,8 @@ def tower_loss(scope, inputs, labels):
 
 def average_gradients(tower_grads):
     """对多卡计算出的梯度求平均"""
+    print('tower_grads', tower_grads)
+    #return tower_grads[0]
     average_grads = []
 
     # 分别对网络中每个 variable 的梯度求平均
@@ -176,17 +186,46 @@ def average_gradients(tower_grads):
         grads = []
 
         # 对该 variable 的每个 gpu 上的梯度求平均
-        for g, _ in grad_and_vars:
-            expanded_g = tf.expand_dims(g, 0)
-            grads.append(expanded_g)
+        #for g, _ in grad_and_vars:
+        #    expanded_g = tf.expand_dims(g, 0)
+        #    print('====g======', g)
+        #    print('====exp_g======', expanded_g)
+        #    grads.append(expanded_g)
 
-        grad = tf.concat(axis=0, values=grads)
-        grad = tf.reduce_mean(grad, 0)
+        #grad = tf.concat(axis=0, values=grads)
+        #grad = tf.reduce_mean(grad, 0)
+        #print('==grad==', grad)
+        #grad = grad_and_vars[0][0]
+        
+        tmp_g = grad_and_vars[1][0]
+        x_g = grad_and_vars[0][0]
+        indices = []
+        for g, _ in grad_and_vars:
+            grads.append(tf.cast(x_g.values, tf.float32))
+            indices.append(g.indices)
+        print('==grads==', grads)
+        avg_grad = tf.scalar_mul((1 / num_gpus), tf.add_n(grads))
+        avg_grad = tf.Print(avg_grad, [avg_grad, grads[0], grads[1]], 'avg_grad & grads: ')
+        #avg_indices = tf.scalar_mul((1 / num_gpus), tf.add_n(indices))
+        avg_indices = tf.cast(tf.cast(tmp_g.indices, tf.int64), tf.int32)
+        #avg_indices = [x for x in tmp_g.indices]
+        avg_grad = tf.Print(avg_grad, [avg_indices, indices[0], indices[1]], '====indices: ')
+        print('avg_indices', avg_indices)
+        print('==avg_grad==', avg_grad)
+        #grad = tf.IndexedSlices(avg_grad, avg_indices)
+        ind = tf.add(tf.subtract(x_g.indices, tmp_g.indices), x_g.indices)
+        ind = tf.Print(ind, [ind, x_g.indices, tmp_g.indices], '==ind==')
+        ind = tf.Print(ind, [ind.shape, x_g.indices.shape, tmp_g.indices.shape, x_g.dense_shape], '==ind shape==')
+        #grad = tf.IndexedSlices(x_g.values, ind, x_g.dense_shape)
+        grad = tf.IndexedSlices(x_g.values, x_g.indices, x_g.dense_shape)
+        #indices_diff = tf.subtract(x_g.indices, tmp_g.indices)
+        #grad = tf.Print(grad, [indices_diff], '-- DIFF --')
+        print('==grad==', grad)
 
         v = grad_and_vars[0][1]
         grad_and_var = (grad, v)
         average_grads.append(grad_and_var)
-    print('average_grads', average_grads)
+    print('=====average_grads=====', average_grads)
     return average_grads
 
 
@@ -218,11 +257,14 @@ if __name__ == '__main__':
         train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
         valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
+        #opt = tf.train.GradientDescentOptimizer(1.0)
+        #opt = tf.train.RMSPropOptimizer(1.0)
+        #opt = tf.train.AdamOptimizer(1e-4)
+        opt = tf.train.MomentumOptimizer(1.0, 0.1)
 
         # GPU 数据并行
         tower_grads = []
         batch_size_gpu = batch_size // num_gpus
-        opt = tf.train.GradientDescentOptimizer(1.0)
         with tf.variable_scope(tf.get_variable_scope()):
             for i in xrange(num_gpus):
                 with tf.device('/gpu:%d' % i):
@@ -239,6 +281,7 @@ if __name__ == '__main__':
                         tf.get_variable_scope().reuse_variables()
 
                         # 计算梯度
+                        #opt = tf.train.AdamOptimizer()
                         grads = opt.compute_gradients(loss)
                         tower_grads.append(grads)
 
@@ -282,9 +325,9 @@ if __name__ == '__main__':
             average_loss += loss_val
             final_loss = loss_val
 
-            if step % 2000 == 0:
+            if step % 1 == 0:
                 if step > 0:
-                    average_loss /= 2000
+                    average_loss /= 1
                 # 平均损失计算的是过去 2000 步的平均损失
                 print('[', dt.datetime.now(), '] == Step ', step,
                         ', average loss of last 2000 steps: ', average_loss)
