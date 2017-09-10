@@ -39,7 +39,7 @@ embedding_size = 128  # embedding 向量的维度
 skip_window = 1       # 考虑中位词左右几个词可用于生成正例
 num_skips = 2         # 一个中位词产生几个正例
 num_sampled = 64      # 一个正例配几个负例
-num_steps = 100001    # 训练步数
+num_steps = 10001    # 训练步数
 
 # 验证集超参数定义
 valid_size = 16       # 验证词的个数
@@ -194,7 +194,8 @@ if __name__ == '__main__':
 
     # === Step 1 === 读取原始训练数据（一行空格分割的单词长文，无标点）
     vocabulary = read_data(filename)
-    print('Raw training data size: ', len(vocabulary))
+    data_size = len(vocabulary)
+    print('Raw training data size: ', data_size)
 
     # === Step 2 === 构建词典
     data, count, dictionary, reverse_dictionary = build_dataset(vocabulary,
@@ -262,6 +263,9 @@ if __name__ == '__main__':
             gpu_options=tf.GPUOptions(allow_growth=True))  # 显存使用控制
 
     with tf.Session(graph=graph, config=config) as session:
+
+        the_every_start_time = dt.datetime.now()
+
         # 初始化参数
         init.run()
         print('Init finished')
@@ -297,6 +301,17 @@ if __name__ == '__main__':
                         log_str = '%s %s,' % (log_str, close_word)
                     print(log_str)
         final_embeddings = normalized_embeddings.eval()
+        time_elapsed_str = str(dt.datetime.now() - the_every_start_time)
+        print('--------------------------------')
+        print('Single Node Multiple GPU')
+        print('--------------------------------')
+        print('TOTAL TIME: ', time_elapsed_str)
+        print('num_steps: ', num_steps)
+        print('num_gpus: ', num_gpus)
+        print('batch_size: ', batch_size)
+        print('vocabulary_size: ', vocabulary_size)
+        print('data_size:', data_size)
+        print('--------------------------------')
 
     # === Step 6 === embedding 可视化
     try:

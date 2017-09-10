@@ -18,11 +18,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numbers
 import collections
 import math
-import os
 import random
+import datetime as dt
 
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
@@ -113,7 +112,8 @@ if __name__ == '__main__':
     # === Step 1 === 读取原始训练数据（一行空格分割的单词长文，无标点）
     filename = 'data/training.txt'
     vocabulary = read_data(filename)
-    print('Raw training data size: ', len(vocabulary))
+    data_size = len(vocabulary)
+    print('Raw training data size: ', data_size)
 
     # === Step 2 === 构建词典
     vocabulary_size = 50000
@@ -187,8 +187,11 @@ if __name__ == '__main__':
         init = tf.global_variables_initializer()
 
     # === Step 5 === 开始训练
-    num_steps = 100001
+    num_steps = 10001
     with tf.Session(graph=graph) as session:
+
+        the_every_start_time = dt.datetime.now()
+
         # 初始化参数
         init.run()
         print('Init finished')
@@ -211,7 +214,7 @@ if __name__ == '__main__':
                 average_loss = 0
 
             # 训练过程中每隔一定步数做一次当前 embedding 效果的验证
-            if step % 100000 == 0:
+            if step % 10000 == 0:
                 sim = similarity.eval()
                 for i in xrange(valid_size):
                     valid_word = reverse_dictionary[valid_examples[i]]
@@ -223,6 +226,17 @@ if __name__ == '__main__':
                         log_str = '%s %s,' % (log_str, close_word)
                     print(log_str)
         final_embeddings = normalized_embeddings.eval()
+        time_elapsed_str = str(dt.datetime.now() - the_every_start_time)
+        print('--------------------------------')
+        print('Single Node Single GPU')
+        print('--------------------------------')
+        print('TOTAL TIME: ', time_elapsed_str)
+        print('num_steps: ', num_steps)
+        print('num_gpus: SINGLE')
+        print('batch_size: ', batch_size)
+        print('vocabulary_size: ', vocabulary_size)
+        print('data_size:', data_size)
+        print('--------------------------------')
 
     # === Step 6 === embedding 可视化
     try:
