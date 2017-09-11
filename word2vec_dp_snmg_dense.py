@@ -81,11 +81,17 @@ def build_dataset(words, n_words):
 data_index = 0
 def generate_batch(batch_size, num_skips, skip_window):
     """生产一个 mini-batch 的有标注训练数据，全部都是正例"""
+
+    # 构造返回数据
+    ret_batch = np.zeros(shape=(batch_size, vocabulary_size), dtype=np.int32)
+    ret_labels = np.zeros(shape=(vocabulary_size, batch_size), dtype=np.int32)
+
+    # 正样本
     global data_index
     assert batch_size % num_skips == 0
     assert num_skips <= 2 * skip_window
-    batch = np.ndarray(shape=(batch_size), dtype=np.int32)
-    labels = np.ndarray(shape=(batch_size, 1), dtype=np.int32)
+    # batch = np.ndarray(shape=(batch_size), dtype=np.int32)
+    # labels = np.ndarray(shape=(batch_size, 1), dtype=np.int32)
     span = 2 * skip_window + 1  # [ skip_window target skip_window ]
     buffer = collections.deque(maxlen=span)
     if data_index + span > len(data):
@@ -99,8 +105,10 @@ def generate_batch(batch_size, num_skips, skip_window):
             while target in targets_to_avoid:
                 target = random.randint(0, span - 1)
             targets_to_avoid.append(target)
-            batch[i * num_skips + j] = buffer[skip_window]
-            labels[i * num_skips + j, 0] = buffer[target]
+            # batch[i * num_skips + j] = buffer[skip_window]
+            # labels[i * num_skips + j, 0] = buffer[target]
+            ret_batch[i * num_skips + j][skip_window] = 1
+            ret_labels[buffer[target]][i * num_skips + j] = 1
         if data_index == len(data):
             for k in range(span):
                 buffer.append(data[k])
@@ -109,23 +117,24 @@ def generate_batch(batch_size, num_skips, skip_window):
             buffer.append(data[data_index])
         data_index += 1
     data_index = (data_index + len(data) - span) % len(data)
-    return batch, labels
+
+    return ret_batch, ret_labels
 
 
-def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
-    """embedding 可视化"""
-    assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
-    plt.figure(figsize=(18, 18))  # in inches
-    for i, label in enumerate(labels):
-        x, y = low_dim_embs[i, :]
-        plt.scatter(x, y)
-        plt.annotate(label,
-                xy=(x, y),
-                xytext=(5, 2),
-                textcoords='offset points',
-                ha='right',
-                va='bottom')
-    plt.savefig(filename)
+# def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
+#     """embedding 可视化"""
+#     assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
+#     plt.figure(figsize=(18, 18))  # in inches
+#     for i, label in enumerate(labels):
+#         x, y = low_dim_embs[i, :]
+#         plt.scatter(x, y)
+#         plt.annotate(label,
+#                 xy=(x, y),
+#                 xytext=(5, 2),
+#                 textcoords='offset points',
+#                 ha='right',
+#                 va='bottom')
+#     plt.savefig(filename)
 
 
 def _variable_on_cpu(name, shape, initializer, dtype=tf.float32):
@@ -142,24 +151,18 @@ def tower_loss(scope, inputs, labels):
     embeddings = _variable_on_cpu('embeddings', [vocabulary_size, embedding_size],
             tf.random_uniform_initializer(-1.0, 1.0))
 
-    # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
-    embed = tf.nn.embedding_lookup(embeddings, train_inputs)
-
     # 定义网络从隐藏层到输出层的参数
     nce_weights = _variable_on_cpu('nce_weights', [vocabulary_size, embedding_size],
             tf.truncated_normal_initializer(stddev=1.0 / math.sqrt(embedding_size)))
-    nce_biases = _variable_on_cpu('nce_biases', [vocabulary_size],
+    nce_biases = _variable_on_cpu('nce_biases', [vocabulary_size, batch_size],
             tf.zeros_initializer())
 
-    # 计算当前 mini-batch 的 NCE loss
-    # tf.nce_loss 负责选出在每个 mini-batch 中每个正样本对应的负样本
-    loss = tf.reduce_mean(
-            tf.nn.nce_loss(weights=nce_weights,
-                    biases=nce_biases,
-                    labels=train_labels,
-                    inputs=embed,
-                    num_sampled=num_sampled,  # 负例采样的个数
-                    num_classes=vocabulary_size))
+    # 构造网络
+    hidden_layer = tf.matmul(inputs, embeddings)
+    output_layer = tf.matmul(nce_weights, hidden_layer) + nce_biases
+    
+    # 计算 loss
+    loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=labels, logits=output_layer)
     tf.add_to_collection('losses', loss)
     losses = tf.get_collection('losses', scope)
     total_loss = tf.add_n(losses, name='total_loss')
@@ -218,9 +221,9 @@ if __name__ == '__main__':
     with graph.as_default(), tf.device('/cpu:0'):
 
         # 网络的输入
-        train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
-        train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
-        valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
+        train_inputs = tf.placeholder(tf.float32, shape=[batch_size, vocabulary_size])
+        train_labels = tf.placeholder(tf.float32, shape=[vocabulary_size, batch_size])
+        # valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
 
         # GPU 数据并行
         tower_grads = []
@@ -232,8 +235,8 @@ if __name__ == '__main__':
                     with tf.name_scope('%s_%d' % ('tower', i)) as scope:
 
                         # 向当前 GPU 分配数据
-                        train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu], [batch_size_gpu])
-                        train_labels_gpu = tf.slice(train_labels, [i * batch_size_gpu, 0], [batch_size_gpu, 1])
+                        train_inputs_gpu = tf.slice(train_inputs, [i * batch_size_gpu, 0], [batch_size_gpu, vocabulary_size])
+                        train_labels_gpu = tf.slice(train_labels, [0, i * batch_size_gpu], [vocabulary_size, batch_size_gpu])
                         print('train_inputs_gpu', train_inputs_gpu)
                         print('train_labels_gpu', train_labels_gpu)
 
@@ -250,12 +253,12 @@ if __name__ == '__main__':
         apply_gradient_op = opt.apply_gradients(grads)
 
         # 在执行 similarity.eval() 时，计算当前 embedding 下词的相似度，用于在训练过程中验证效果
-        norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
-        normalized_embeddings = embeddings / norm
-        valid_embeddings = tf.nn.embedding_lookup(
-                normalized_embeddings, valid_dataset)
-        similarity = tf.matmul(
-                valid_embeddings, normalized_embeddings, transpose_b=True)
+        # norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
+        # normalized_embeddings = embeddings / norm
+        # valid_embeddings = tf.nn.embedding_lookup(
+        #         normalized_embeddings, valid_dataset)
+        # similarity = tf.matmul(
+        #         valid_embeddings, normalized_embeddings, transpose_b=True)
 
         # 变量初始化操作
         init = tf.global_variables_initializer()
@@ -294,17 +297,17 @@ if __name__ == '__main__':
                 average_loss = 0
 
             # 训练过程中每隔一定步数做一次当前 embedding 效果的验证
-            if step % 10000 == 0:
-                sim = similarity.eval()
-                for i in xrange(valid_size):
-                    valid_word = reverse_dictionary[valid_examples[i]]
-                    top_k = 8  # 考虑离验证词最近的几个词
-                    nearest = (-sim[i, :]).argsort()[1:top_k + 1]
-                    log_str = 'The nearest words to %s in the embedding vector space: ' % valid_word
-                    for k in xrange(top_k):
-                        close_word = reverse_dictionary[nearest[k]]
-                        log_str = '%s %s,' % (log_str, close_word)
-                    print(log_str)
+            # if step % 10000 == 0:
+            #     sim = similarity.eval()
+            #     for i in xrange(valid_size):
+            #         valid_word = reverse_dictionary[valid_examples[i]]
+            #         top_k = 8  # 考虑离验证词最近的几个词
+            #         nearest = (-sim[i, :]).argsort()[1:top_k + 1]
+            #         log_str = 'The nearest words to %s in the embedding vector space: ' % valid_word
+            #         for k in xrange(top_k):
+            #             close_word = reverse_dictionary[nearest[k]]
+            #             log_str = '%s %s,' % (log_str, close_word)
+            #         print(log_str)
         final_embeddings = normalized_embeddings.eval()
         time_elapsed_str = str(dt.datetime.now() - the_every_start_time)
         print('--------------------------------')

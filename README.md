@@ -5,6 +5,8 @@ word2vec 任务的并行计算实现
 
 * `word2vec_snsg.py`  单机单卡训练
 * `word2vec_dp_snmg.py`  数据并行：单机多卡训练
+* `word2vec_dp_snmg_test.py`  数据并行：单机多卡训练（改进 average_gradient() 的计算效率）
+* `word2vec_dp_snmg_dense.py`  数据并行：单机多卡训练（备用，不使用稀疏表示的计算）
 
 ## 参考文献
 
