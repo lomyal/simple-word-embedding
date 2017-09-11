@@ -1,5 +1,5 @@
 # simple-word-embedding
-word2vec 任务的并行计算实现
+Word2Vec 任务的并行计算实现
 
 ## 文件说明
 
@@ -9,9 +9,36 @@ word2vec 任务的并行计算实现
 
 ## 一些实验结果
 
+- 实验环境：E5-2650 / 256G / P40x8 / CentOS6 / Python3 / TF1.3
+- 通用参数
+    - data_size: 17005207
+    - vocabulary_size: 50000
+- 单机多卡，优化，大计算负载
+    - batch_size: 16384
+    - step_num: 600
+    - GPU: 1 / 2 / 4 / 8
+    - Time: 0:03:05 / 0:01:38 / 0:01:15 / 0:01:10
+- 单机多卡，优化，小计算负载
+    - batch_size: 128
+    - step_num: 10000
+    - GPU: 1 / 2 / 4 / 8
+    - Time: 0:00:26 / 0:00:27 / 0:00:31 / 0:00:39
+- 单机多卡，未优化
+    - batch_size: 128
+    - step_num: 10000
+    - GPU: 1 / 2 / 4 / 8
+    - Time: 0:04:23 / 0:18:01 / 0:31:38 / 1:04:22
+- 非并行架构，小计算负载
+    - batch_size: 128
+    - step_num: 10000
+    - GPU: 1
+    - Time: 0:00:21
 
 
-## 过程中解决的一些问题
+## 调试过程中的一些问题
+
+### 多卡数据并行计算效率问题
+并行计算会有额外开销，当这部分开销占比过大时会降低甚至抵消。上述实验中的数据分配是将一个 mini-batch 中的数据平均分配到每个 GPU 中，保证等效 batch_size 不随 GPU 个数改变。这样未充分利用每个 GPU 的计算能力，实际线上使用时可通过提高单 GPU 负载降低并行开销比例。
 
 ### 稀疏梯度表示（tf.IndexedSlices）求均值问题
 
@@ -62,6 +89,10 @@ Word2Vec 任务中，由于使用了 `tf.nn.embedding_lookup`，因此在每个 
         return average_grads
 
 代码中 `values` 和 `indices` 可直接拼接的原理是 `optimizer._apply_sparse_duplicate_indices(g, self._v)` 在更新参数时能正确处理 `indices` 中的重复项。 
+
+此处的调试花了比较长的时间，开始我在构造 `tf.IndexedSlices` 向量时没有使用 `tf.concat` ，而是期望构造与原来大小相同的 `values`，这种方法在构造 `IndexedSlices` 没问题（打印观察），但就是在在更新参数时更新不正确，导致迭代不收敛 [原因待进一步跟进]。在过程中我仔细看了 TF 相关文档和源码，把 stackoverflow 上 IndexedSlices 相关的问题都看了几遍，最后才找到一个没人 upvote 的答案恰好能解决我的问题（而且他的答案本身也有小错误）。
+
+在这个过程中也收获了很多知识和经验，包括 TF 优化器的底层实现、TF 的调试打印技巧、Word2Vec 原理的更深入理解等等。
 
 
 ### NCE LOSS 负样本采样个数问题
