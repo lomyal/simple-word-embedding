@@ -7,20 +7,12 @@
 #
 ################################################################################
 """
-数据并行：单机多卡训练 word2vec 测试
-
-尝试改进 average_gradient() 的计算效率：对 IndexedSlices 类型的梯度求均值时，不将其
-扩展为 Dense Tensor，而是直接计算 IndexedSlices.values 的均值，最后仍返回
-IndexedSlices 类型的梯度。
-
-已解决问题：自己构造 IndexedSlices 类型的梯度，在 optimizer 执行 apply_gradient() 操
-作时，对变量的更新操作不正确。已阅读 IndexedSlices、 GradientDescentOptimizer 的源
-码，了解梯度更新执行细节。
-参考：https://stackoverflow.com/questions/37074077/fail-to-average-indexedslices-on-porting-ptb-word-lm-py-to-multi-gpu-towers
+数据并行：单机多卡训练 word2vec（未优化版本）
 
 Authors: Wang Shijun
-Date:  2017/09/10 12:03:00
+Date:  2017/09/09 16:16:00
 """
+
 
 from __future__ import absolute_import
 from __future__ import division
@@ -46,8 +38,8 @@ batch_size = 128
 embedding_size = 128  # embedding 向量的维度
 skip_window = 1       # 考虑中位词左右几个词可用于生成正例
 num_skips = 2         # 一个中位词产生几个正例
-num_sampled = 64      # 一个 batch 的正例搭配配几个负例
-num_steps = 10001     # 训练步数
+num_sampled = 64      # 一个正例配几个负例
+num_steps = 10001    # 训练步数
 
 # 验证集超参数定义
 valid_size = 16       # 验证词的个数
@@ -117,20 +109,20 @@ def generate_batch(batch_size, num_skips, skip_window):
     return batch, labels
 
 
-# def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
-#     """embedding 可视化"""
-#     assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
-#     plt.figure(figsize=(18, 18))  # in inches
-#     for i, label in enumerate(labels):
-#         x, y = low_dim_embs[i, :]
-#         plt.scatter(x, y)
-#         plt.annotate(label,
-#                 xy=(x, y),
-#                 xytext=(5, 2),
-#                 textcoords='offset points',
-#                 ha='right',
-#                 va='bottom')
-#     plt.savefig(filename)
+def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
+    """embedding 可视化"""
+    assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
+    plt.figure(figsize=(18, 18))  # in inches
+    for i, label in enumerate(labels):
+        x, y = low_dim_embs[i, :]
+        plt.scatter(x, y)
+        plt.annotate(label,
+                xy=(x, y),
+                xytext=(5, 2),
+                textcoords='offset points',
+                ha='right',
+                va='bottom')
+    plt.savefig(filename)
 
 
 def _variable_on_cpu(name, shape, initializer, dtype=tf.float32):
@@ -165,7 +157,13 @@ def tower_loss(scope, inputs, labels):
                     inputs=embed,
                     num_sampled=num_sampled,  # 负例采样的个数
                     num_classes=vocabulary_size))
-    return loss, embeddings
+    tf.add_to_collection('losses', loss)
+    losses = tf.get_collection('losses', scope)
+    total_loss = tf.add_n(losses, name='total_loss')
+    print('loss', loss)
+    print('losses', losses)
+    print('total_loss', total_loss)
+    return total_loss, embeddings
 
 
 def average_gradients(tower_grads):
@@ -174,14 +172,21 @@ def average_gradients(tower_grads):
 
     # 分别对网络中每个 variable 的梯度求平均
     for grad_and_vars in zip(*tower_grads):
+        print('grad_and_vars', grad_and_vars)
+        grads = []
 
-        # 求稀疏表示的梯度的平均
-        values = tf.concat([g.values / num_gpus for g, _ in grad_and_vars], 0)
-        indices = tf.concat([g.indices for g, _ in grad_and_vars], 0)
-        grad = tf.IndexedSlices(values, indices)
-        var = grad_and_vars[0][1]  # 并无不同
-        grad_and_var = (grad, var)
+        # 对该 variable 的每个 gpu 上的梯度求平均
+        for g, _ in grad_and_vars:
+            expanded_g = tf.expand_dims(g, 0)
+            grads.append(expanded_g)
+
+        grad = tf.concat(axis=0, values=grads)
+        grad = tf.reduce_mean(grad, 0)
+
+        v = grad_and_vars[0][1]
+        grad_and_var = (grad, v)
         average_grads.append(grad_and_var)
+    print('average_grads', average_grads)
     return average_grads
 
 
@@ -213,11 +218,11 @@ if __name__ == '__main__':
         train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
         valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
-        opt = tf.train.GradientDescentOptimizer(1.0)
 
         # GPU 数据并行
         tower_grads = []
         batch_size_gpu = batch_size // num_gpus
+        opt = tf.train.GradientDescentOptimizer(1.0)
         with tf.variable_scope(tf.get_variable_scope()):
             for i in xrange(num_gpus):
                 with tf.device('/gpu:%d' % i):
