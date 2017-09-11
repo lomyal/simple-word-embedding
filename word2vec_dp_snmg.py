@@ -140,7 +140,7 @@ def tower_loss(scope, inputs, labels):
             tf.random_uniform_initializer(-1.0, 1.0))
 
     # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
-    embed = tf.nn.embedding_lookup(embeddings, train_inputs)
+    embed = tf.nn.embedding_lookup(embeddings, inputs)
 
     # 定义网络从隐藏层到输出层的参数
     nce_weights = _variable_on_cpu('nce_weights', [vocabulary_size, embedding_size],
@@ -153,7 +153,7 @@ def tower_loss(scope, inputs, labels):
     loss = tf.reduce_mean(
             tf.nn.nce_loss(weights=nce_weights,
                     biases=nce_biases,
-                    labels=train_labels,
+                    labels=labels,
                     inputs=embed,
                     num_sampled=num_sampled,  # 负例采样的个数
                     num_classes=vocabulary_size))
