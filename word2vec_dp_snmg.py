@@ -179,7 +179,8 @@ def average_gradients(tower_grads):
         values = tf.concat([g.values / num_gpus for g, _ in grad_and_vars], 0)
         indices = tf.concat([g.indices for g, _ in grad_and_vars], 0)
         grad = tf.IndexedSlices(values, indices)
-        var = grad_and_vars[0][1]  # 并无不同
+
+        var = grad_and_vars[0][1]  # 不同 GPU 对应的 Variable 并无不同，取 GPU:0 上的
         grad_and_var = (grad, var)
         average_grads.append(grad_and_var)
     return average_grads
