@@ -13,14 +13,14 @@
 扩展为 Dense Tensor，而是直接计算 IndexedSlices.values 的均值，最后仍返回
 IndexedSlices 类型的梯度。
 
-存在问题：自己构造 IndexedSlices 类型的梯度，在 optimizer 执行 apply_gradient() 操
+已解决问题：自己构造 IndexedSlices 类型的梯度，在 optimizer 执行 apply_gradient() 操
 作时，对变量的更新操作不正确。已阅读 IndexedSlices、 GradientDescentOptimizer 的源
-码，基本了解梯度更新执行细节，但目前尚未解决此问题。
+码，了解梯度更新执行细节。
+参考：https://stackoverflow.com/questions/37074077/fail-to-average-indexedslices-on-porting-ptb-word-lm-py-to-multi-gpu-towers
 
 Authors: Wang Shijun
 Date:  2017/09/10 12:03:00
 """
-
 
 from __future__ import absolute_import
 from __future__ import division
@@ -34,20 +34,20 @@ import datetime as dt
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
-from tensorflow.python.framework import ops
+
 
 # 数据超参数定义
 filename = 'data/training.txt'
 vocabulary_size = 50000
 
 # 训练超参数定义
-num_gpus = 2
+num_gpus = 1
 batch_size = 128
 embedding_size = 128  # embedding 向量的维度
 skip_window = 1       # 考虑中位词左右几个词可用于生成正例
 num_skips = 2         # 一个中位词产生几个正例
-num_sampled = 64      # 一个正例配几个负例
-num_steps = 2000    # 训练步数
+num_sampled = 64      # 一个 batch 的正例搭配配几个负例
+num_steps = 10001     # 训练步数
 
 # 验证集超参数定义
 valid_size = 16       # 验证词的个数
@@ -117,20 +117,20 @@ def generate_batch(batch_size, num_skips, skip_window):
     return batch, labels
 
 
-def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
-    """embedding 可视化"""
-    assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
-    plt.figure(figsize=(18, 18))  # in inches
-    for i, label in enumerate(labels):
-        x, y = low_dim_embs[i, :]
-        plt.scatter(x, y)
-        plt.annotate(label,
-                xy=(x, y),
-                xytext=(5, 2),
-                textcoords='offset points',
-                ha='right',
-                va='bottom')
-    plt.savefig(filename)
+# def plot_with_labels(low_dim_embs, labels, filename='tsne.png'):
+#     """embedding 可视化"""
+#     assert low_dim_embs.shape[0] >= len(labels), 'label 数超过了 embedding 表大小'
+#     plt.figure(figsize=(18, 18))  # in inches
+#     for i, label in enumerate(labels):
+#         x, y = low_dim_embs[i, :]
+#         plt.scatter(x, y)
+#         plt.annotate(label,
+#                 xy=(x, y),
+#                 xytext=(5, 2),
+#                 textcoords='offset points',
+#                 ha='right',
+#                 va='bottom')
+#     plt.savefig(filename)
 
 
 def _variable_on_cpu(name, shape, initializer, dtype=tf.float32):
@@ -148,7 +148,7 @@ def tower_loss(scope, inputs, labels):
             tf.random_uniform_initializer(-1.0, 1.0))
 
     # 定义对应每个 mini-batch 的 inputs 的部分 embedding 矩阵表示
-    embed = tf.nn.embedding_lookup(embeddings, train_inputs)
+    embed = tf.nn.embedding_lookup(embeddings, inputs)
 
     # 定义网络从隐藏层到输出层的参数
     nce_weights = _variable_on_cpu('nce_weights', [vocabulary_size, embedding_size],
@@ -161,71 +161,27 @@ def tower_loss(scope, inputs, labels):
     loss = tf.reduce_mean(
             tf.nn.nce_loss(weights=nce_weights,
                     biases=nce_biases,
-                    labels=train_labels,
+                    labels=labels,
                     inputs=embed,
                     num_sampled=num_sampled,  # 负例采样的个数
                     num_classes=vocabulary_size))
-    tf.add_to_collection('losses', loss)
-    losses = tf.get_collection('losses', scope)
-    total_loss = tf.add_n(losses, name='total_loss')
-    print('loss', loss)
-    print('losses', losses)
-    print('total_loss', total_loss)
-    return total_loss, embeddings
+    return loss, embeddings
 
 
 def average_gradients(tower_grads):
     """对多卡计算出的梯度求平均"""
-    print('tower_grads', tower_grads)
-    #return tower_grads[0]
     average_grads = []
 
     # 分别对网络中每个 variable 的梯度求平均
     for grad_and_vars in zip(*tower_grads):
-        print('grad_and_vars', grad_and_vars)
-        grads = []
 
-        # 对该 variable 的每个 gpu 上的梯度求平均
-        #for g, _ in grad_and_vars:
-        #    expanded_g = tf.expand_dims(g, 0)
-        #    print('====g======', g)
-        #    print('====exp_g======', expanded_g)
-        #    grads.append(expanded_g)
-
-        #grad = tf.concat(axis=0, values=grads)
-        #grad = tf.reduce_mean(grad, 0)
-        #print('==grad==', grad)
-        #grad = grad_and_vars[0][0]
-        
-        tmp_g = grad_and_vars[1][0]
-        x_g = grad_and_vars[0][0]
-        indices = []
-        for g, _ in grad_and_vars:
-            grads.append(tf.cast(x_g.values, tf.float32))
-            indices.append(g.indices)
-        print('==grads==', grads)
-        avg_grad = tf.scalar_mul((1 / num_gpus), tf.add_n(grads))
-        avg_grad = tf.Print(avg_grad, [avg_grad, grads[0], grads[1]], 'avg_grad & grads: ')
-        #avg_indices = tf.scalar_mul((1 / num_gpus), tf.add_n(indices))
-        avg_indices = tf.cast(tf.cast(tmp_g.indices, tf.int64), tf.int32)
-        #avg_indices = [x for x in tmp_g.indices]
-        avg_grad = tf.Print(avg_grad, [avg_indices, indices[0], indices[1]], '====indices: ')
-        print('avg_indices', avg_indices)
-        print('==avg_grad==', avg_grad)
-        #grad = tf.IndexedSlices(avg_grad, avg_indices)
-        ind = tf.add(tf.subtract(x_g.indices, tmp_g.indices), x_g.indices)
-        ind = tf.Print(ind, [ind, x_g.indices, tmp_g.indices], '==ind==')
-        ind = tf.Print(ind, [ind.shape, x_g.indices.shape, tmp_g.indices.shape, x_g.dense_shape], '==ind shape==')
-        #grad = tf.IndexedSlices(x_g.values, ind, x_g.dense_shape)
-        grad = tf.IndexedSlices(x_g.values, x_g.indices, x_g.dense_shape)
-        #indices_diff = tf.subtract(x_g.indices, tmp_g.indices)
-        #grad = tf.Print(grad, [indices_diff], '-- DIFF --')
-        print('==grad==', grad)
-
-        v = grad_and_vars[0][1]
-        grad_and_var = (grad, v)
+        # 求稀疏表示的梯度的平均
+        values = tf.concat([g.values / num_gpus for g, _ in grad_and_vars], 0)
+        indices = tf.concat([g.indices for g, _ in grad_and_vars], 0)
+        grad = tf.IndexedSlices(values, indices)
+        var = grad_and_vars[0][1]  # 并无不同
+        grad_and_var = (grad, var)
         average_grads.append(grad_and_var)
-    print('=====average_grads=====', average_grads)
     return average_grads
 
 
@@ -257,10 +213,7 @@ if __name__ == '__main__':
         train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
         valid_dataset = tf.constant(valid_examples, dtype=tf.int32)
-        #opt = tf.train.GradientDescentOptimizer(1.0)
-        #opt = tf.train.RMSPropOptimizer(1.0)
-        #opt = tf.train.AdamOptimizer(1e-4)
-        opt = tf.train.MomentumOptimizer(1.0, 0.1)
+        opt = tf.train.GradientDescentOptimizer(1.0)
 
         # GPU 数据并行
         tower_grads = []
@@ -281,7 +234,6 @@ if __name__ == '__main__':
                         tf.get_variable_scope().reuse_variables()
 
                         # 计算梯度
-                        #opt = tf.train.AdamOptimizer()
                         grads = opt.compute_gradients(loss)
                         tower_grads.append(grads)
 
@@ -325,9 +277,9 @@ if __name__ == '__main__':
             average_loss += loss_val
             final_loss = loss_val
 
-            if step % 1 == 0:
+            if step % 2000 == 0:
                 if step > 0:
-                    average_loss /= 1
+                    average_loss /= 2000
                 # 平均损失计算的是过去 2000 步的平均损失
                 print('[', dt.datetime.now(), '] == Step ', step,
                         ', average loss of last 2000 steps: ', average_loss)
